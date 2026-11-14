@@ -1,0 +1,366 @@
+// CA ORG Management Tool — database schema
+// PostgreSQL on Supabase. DATABASE_URL = pooled connection (app), DIRECT_URL = direct connection (schema changes).
+// Enum-like fields are stored as strings; allowed values are documented inline
+// and enforced in src/lib/constants.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ───────────────────────────── Organisation & people ─────────────────────────────
+
+model Organization {
+  id            String   @id @default(cuid())
+  name          String
+  legalName     String?
+  gstin         String?
+  pan           String?
+  address       String?
+  city          String?
+  state         String?
+  stateCode     String? // 2-digit GST state code, e.g. "27" for Maharashtra
+  pincode       String?
+  phone         String?
+  email         String?
+  website       String?
+  bankName      String?
+  bankAccountNo String?
+  bankIfsc      String?
+  bankBranch    String?
+  upiId         String?
+  invoicePrefix String   @default("INV")
+  quotePrefix   String   @default("QT")
+  creditPrefix  String   @default("CN")
+  proformaPrefix String  @default("PI")
+  invoiceTerms  String?
+  createdAt     DateTime @default(now())
+
+  users        User[]
+  clients      Client[]
+  projects     Project[]
+  issues       Issue[]
+  availability AvailabilityEntry[]
+  holidays     Holiday[]
+  items        Item[]
+  invoices     Invoice[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  orgId        String
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("STAFF") // PARTNER | MANAGER | STAFF
+  designation  String?
+  phone        String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  ledProjects     Project[]           @relation("ProjectLead")
+  assignedIssues  Issue[]             @relation("IssueAssignee")
+  reportedIssues  Issue[]             @relation("IssueReporter")
+  comments        Comment[]
+  activities      Activity[]
+  workLogs        WorkLog[]
+  watching        Watcher[]
+  availability    AvailabilityEntry[] @relation("AvailabilityUser")
+  approvals       AvailabilityEntry[] @relation("AvailabilityApprover")
+  managedClients  Client[]            @relation("ClientManager")
+}
+
+// ───────────────────────────── Clients ─────────────────────────────
+
+model Client {
+  id            String   @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name          String
+  entityType    String   @default("COMPANY") // COMPANY | LLP | PARTNERSHIP | PROPRIETORSHIP | INDIVIDUAL | HUF | TRUST
+  pan           String?
+  gstin         String?
+  cin           String?
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  city          String?
+  state         String?
+  stateCode     String?
+  pincode       String?
+  notes         String?
+  managerId     String?
+  manager       User?    @relation("ClientManager", fields: [managerId], references: [id])
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  projects Project[]
+  invoices Invoice[]
+}
+
+// ───────────────────────────── Work management ─────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  key         String   // short uppercase key, e.g. "GST" → issues GST-1, GST-2
+  name        String
+  description String?
+  clientId    String?
+  client      Client?  @relation(fields: [clientId], references: [id])
+  leadId      String?
+  lead        User?    @relation("ProjectLead", fields: [leadId], references: [id])
+  issueCounter Int     @default(0)
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  statuses WorkflowStatus[]
+  sprints  Sprint[]
+  issues   Issue[]
+
+  @@unique([orgId, key])
+}
+
+model WorkflowStatus {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  category  String  // TODO | IN_PROGRESS | DONE
+  position  Int
+  wipLimit  Int?
+
+  issues Issue[]
+}
+
+model Sprint {
+  id        String    @id @default(cuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  goal      String?
+  state     String    @default("FUTURE") // FUTURE | ACTIVE | CLOSED
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime  @default(now())
+
+  issues Issue[]
+}
+
+model Issue {
+  id           String    @id @default(cuid())
+  orgId        String
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  projectId    String
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  number       Int
+  type         String    @default("TASK") // EPIC | STORY | TASK | BUG | SUBTASK
+  title        String
+  description  String?
+  statusId     String
+  status       WorkflowStatus @relation(fields: [statusId], references: [id])
+  priority     String    @default("MEDIUM") // HIGHEST | HIGH | MEDIUM | LOW | LOWEST
+  assigneeId   String?
+  assignee     User?     @relation("IssueAssignee", fields: [assigneeId], references: [id])
+  reporterId   String
+  reporter     User      @relation("IssueReporter", fields: [reporterId], references: [id])
+  parentId     String?   // sub-task → parent issue
+  parent       Issue?    @relation("SubTasks", fields: [parentId], references: [id], onDelete: Cascade)
+  subTasks     Issue[]   @relation("SubTasks")
+  epicId       String?   // story/task/bug → epic
+  epic         Issue?    @relation("EpicChildren", fields: [epicId], references: [id])
+  epicChildren Issue[]   @relation("EpicChildren")
+  sprintId     String?
+  sprint       Sprint?   @relation(fields: [sprintId], references: [id])
+  labels       String?   // comma-separated
+  storyPoints  Int?
+  estimateMins Int?
+  startDate    DateTime?
+  dueDate      DateTime?
+  position     Float     @default(0)
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  comments   Comment[]
+  activities Activity[]
+  workLogs   WorkLog[]
+  watchers   Watcher[]
+  linksOut   IssueLink[] @relation("LinkFrom")
+  linksIn    IssueLink[] @relation("LinkTo")
+
+  @@unique([projectId, number])
+}
+
+model IssueLink {
+  id     String @id @default(cuid())
+  fromId String
+  from   Issue  @relation("LinkFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toId   String
+  to     Issue  @relation("LinkTo", fields: [toId], references: [id], onDelete: Cascade)
+  type   String // BLOCKS | RELATES | DUPLICATES
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  actorId   String
+  actor     User     @relation(fields: [actorId], references: [id])
+  action    String   // created | updated | commented | logged_work
+  field     String?
+  fromValue String?
+  toValue   String?
+  createdAt DateTime @default(now())
+}
+
+model WorkLog {
+  id        String   @id @default(cuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  minutes   Int
+  date      DateTime
+  note      String?
+  billable  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model Watcher {
+  issueId String
+  issue   Issue  @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, userId])
+}
+
+// ───────────────────────────── Availability (attendance) ─────────────────────────────
+
+model AvailabilityEntry {
+  id         String   @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation("AvailabilityUser", fields: [userId], references: [id], onDelete: Cascade)
+  type       String   // LEAVE | ABSENT | OOO | WFH
+  startDate  DateTime // stored as UTC midnight of the local date
+  endDate    DateTime
+  halfDay    Boolean  @default(false)
+  note       String?
+  status     String   @default("APPROVED") // PENDING | APPROVED | REJECTED
+  approverId String?
+  approver   User?    @relation("AvailabilityApprover", fields: [approverId], references: [id])
+  createdAt  DateTime @default(now())
+}
+
+model Holiday {
+  id    String   @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  date  DateTime
+  name  String
+}
+
+// ───────────────────────────── Billing ─────────────────────────────
+
+model Item {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  kind        String   @default("SERVICE") // SERVICE | GOODS
+  hsnSac      String?
+  unit        String   @default("NOS")
+  rate        Float    @default(0)
+  gstRate     Float    @default(18)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  lines InvoiceLine[]
+}
+
+model Invoice {
+  id            String    @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  docType       String    @default("INVOICE") // INVOICE | QUOTATION | PROFORMA | CREDIT_NOTE
+  number        String
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id])
+  issueDate     DateTime
+  dueDate       DateTime?
+  placeOfSupply String?   // GST state code of the place of supply
+  interState    Boolean   @default(false)
+  status        String    @default("DRAFT") // DRAFT | SENT | PARTIAL | PAID | CANCELLED (quotes: DRAFT | SENT | ACCEPTED | DECLINED)
+  reference     String?   // PO number / original invoice number for credit notes
+  notes         String?
+  terms         String?
+  subtotal      Float     @default(0) // sum of taxable values
+  cgst          Float     @default(0)
+  sgst          Float     @default(0)
+  igst          Float     @default(0)
+  roundOff      Float     @default(0)
+  total         Float     @default(0)
+  amountPaid    Float     @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines    InvoiceLine[]
+  payments Payment[]
+
+  @@unique([orgId, docType, number])
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  itemId      String?
+  item        Item?   @relation(fields: [itemId], references: [id])
+  position    Int
+  description String
+  hsnSac      String?
+  qty         Float
+  unit        String  @default("NOS")
+  rate        Float
+  discountPct Float   @default(0)
+  gstRate     Float
+  taxable     Float
+  cgst        Float
+  sgst        Float
+  igst        Float
+  amount      Float
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount    Float
+  date      DateTime
+  mode      String   @default("UPI") // UPI | BANK_TRANSFER | CASH | CHEQUE | CARD
+  reference String?
+  note      String?
+  createdAt DateTime @default(now())
+}
